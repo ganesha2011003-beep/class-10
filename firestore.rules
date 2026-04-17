@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity validation helpers
+    function isValidChat(data) {
+      return data.keys().hasAll(['userId', 'subject', 'title', 'createdAt', 'updatedAt'])
+        && data.keys().size() == 5
+        && data.userId == request.auth.uid
+        && data.subject is string && data.subject.size() <= 100
+        && data.title is string && data.title.size() <= 200
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['role', 'content', 'createdAt'])
+        && data.keys().size() == 3
+        && data.role in ['user', 'assistant']
+        && data.content is string && data.content.size() <= 50000
+        && data.createdAt == request.time;
+    }
+
+    function isValidSource(data) {
+      return data.keys().hasAll(['name', 'type', 'content', 'createdAt'])
+        && data.keys().size() == 4
+        && data.name is string && data.name.size() <= 255
+        && data.type in ['pdf', 'text']
+        && data.content is string && data.content.size() <= 1000000
+        && data.createdAt == request.time;
+    }
+
+    // Collection: Chats
+    match /chats/{chatId} {
+      allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+      allow get: if isVerifiedUser() && isOwner(resource.data.userId);
+      
+      allow create: if isVerifiedUser() && isValidId(chatId) && isValidChat(incoming());
+      
+      allow update: if isVerifiedUser() && isOwner(existing().userId) 
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['subject', 'updatedAt'])
+        );
+        
+      allow delete: if isVerifiedUser() && isOwner(existing().userId);
+
+      // Subcollection: Messages
+      match /messages/{messageId} {
+        allow list: if isVerifiedUser() && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+        allow get: if isVerifiedUser() && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+        
+        allow create: if isVerifiedUser() && isValidId(messageId) && isValidMessage(incoming())
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+      }
+
+      // Subcollection: Sources
+      match /sources/{sourceId} {
+        allow list: if isVerifiedUser() && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+        allow get: if isVerifiedUser() && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+        
+        allow create: if isVerifiedUser() && isValidId(sourceId) && isValidSource(incoming())
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+          
+        allow delete: if isVerifiedUser() && get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid;
+      }
+    }
+  }
+}
